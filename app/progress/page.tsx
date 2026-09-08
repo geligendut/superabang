@@ -3,7 +3,18 @@
 import Link from 'next/link';
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { getSupabaseBrowserClient } from '../../src/backend/supabase-browser';
-import { metricTrend, parseLocalizedDecimal, validateBodyMeasurement, type BodyMeasurement } from '../../src/domain/body-progress';
+import {
+  metricTrajectory,
+  metricTrend,
+  parseLocalizedDecimal,
+  TRAJECTORY_MIN_OBSERVATIONS,
+  TRAJECTORY_MIN_SPAN_DAYS,
+  validateBodyMeasurement,
+  type BodyMeasurement,
+  type MetricTrajectory,
+} from '../../src/domain/body-progress';
+
+const numberFormatter = new Intl.NumberFormat('id-ID', { maximumFractionDigits: 2 });
 
 export default function ProgressPage() {
   const [rows, setRows] = useState<BodyMeasurement[]>([]);
@@ -39,6 +50,8 @@ export default function ProgressPage() {
 
   const weightTrend = useMemo(() => metricTrend(rows, 'weightKg'), [rows]);
   const waistTrend = useMemo(() => metricTrend(rows, 'waistCm'), [rows]);
+  const weightTrajectory = useMemo(() => metricTrajectory(rows, 'weightKg'), [rows]);
+  const waistTrajectory = useMemo(() => metricTrajectory(rows, 'waistCm'), [rows]);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -62,8 +75,22 @@ export default function ProgressPage() {
     finally { setSaving(false); }
   }
 
-  const fmt = (value: number | null, unit: string) => value === null ? '—' : `${value} ${unit}`;
-  const delta = (value: number | null, unit: string) => value === null ? 'Need ≥2 observations' : `${value > 0 ? '+' : ''}${value} ${unit} vs prior observation`;
+  const fmt = (value: number | null, unit: string) => value === null ? '—' : `${numberFormatter.format(value)} ${unit}`;
+  const delta = (value: number | null, unit: string) => value === null ? 'Need ≥2 observations' : `${value > 0 ? '+' : ''}${numberFormatter.format(value)} ${unit} vs prior observation`;
+
+  function trajectoryCopy(value: MetricTrajectory, unit: string) {
+    if (value.status === 'ESTIMATE_AVAILABLE' && value.weeklySlope !== null) {
+      const sign = value.weeklySlope > 0 ? '+' : '';
+      return <>
+        <strong>{sign}{numberFormatter.format(value.weeklySlope)} {unit}/week estimated</strong>
+        <p className="muted">Linear descriptive trend across {value.observationCount} observations over {numberFormatter.format(value.spanDays)} days. Not a target or medical interpretation.</p>
+      </>;
+    }
+    return <>
+      <strong>Trend estimate not available yet</strong>
+      <p className="muted">{value.observationCount} observation{value.observationCount === 1 ? '' : 's'} · need ≥{TRAJECTORY_MIN_OBSERVATIONS} observations spanning ≥{TRAJECTORY_MIN_SPAN_DAYS} days. No missing values are inferred.</p>
+    </>;
+  }
 
   return <main>
     <div className="row"><Link href="/">← Home</Link><Link href="/auth">Account</Link></div>
@@ -74,6 +101,13 @@ export default function ProgressPage() {
       <div className="card"><strong>Latest weight</strong><h2>{fmt(weightTrend.latest, 'kg')}</h2><p className="muted">{delta(weightTrend.delta, 'kg')}</p></div>
       <div className="card"><strong>Latest waist</strong><h2>{fmt(waistTrend.latest, 'cm')}</h2><p className="muted">{delta(waistTrend.delta, 'cm')}</p></div>
     </div>
+
+    <h2>Longitudinal trajectory</h2>
+    <div className="form-grid">
+      <div className="card"><strong>Weight trajectory</strong><div className="trajectory-copy">{trajectoryCopy(weightTrajectory, 'kg')}</div></div>
+      <div className="card"><strong>Waist trajectory</strong><div className="trajectory-copy">{trajectoryCopy(waistTrajectory, 'cm')}</div></div>
+    </div>
+    <p className="muted">The trajectory layer deliberately waits for enough longitudinal data instead of interpreting a single measurement or short-term fluctuation.</p>
 
     <form className="card" onSubmit={submit}>
       <h2>Log measurement</h2>
@@ -88,7 +122,7 @@ export default function ProgressPage() {
     {message && <p className="muted">{message}</p>}
     <h2>Recent observations</h2>
     {rows.map(row => <div className="card" key={row.id}>
-      <strong>{new Date(row.measuredAt).toLocaleString()}</strong>
+      <strong>{new Date(row.measuredAt).toLocaleString('id-ID')}</strong>
       <div className="set-line"><span>Weight</span><span>{fmt(row.weightKg, 'kg')}</span></div>
       <div className="set-line"><span>Waist</span><span>{fmt(row.waistCm, 'cm')}</span></div>
       <p className="muted">Source: MANUAL</p>
