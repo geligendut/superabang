@@ -1,6 +1,6 @@
-const CACHE = 'superabang-shell-v11';
+const CACHE = 'superabang-shell-v12';
 const SHELL = ['/', '/workout/today', '/history',
-  '/training-progression', '/progress', '/nutrition', '/nutrition/decision', '/auth', '/manifest.webmanifest'];
+  '/training-progression', '/progress', '/nutrition', '/nutrition/decision', '/food-finder', '/auth', '/manifest.webmanifest'];
 
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)));
