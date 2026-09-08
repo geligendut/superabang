@@ -3,8 +3,8 @@
 import Link from 'next/link';
 import { useState } from 'react';
 import { getSupabaseBrowserClient } from '@/src/backend/supabase-browser';
-import {
 import FoodFinderMap from './FoodFinderMap';
+import {
   directionsUrl,
   rankFoodFinderCandidates,
   type RestaurantDiscoveryCandidate,
