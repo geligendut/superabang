@@ -2,6 +2,7 @@ export type FoodFinderTrainingContext =
   | 'REST_DAY' | 'PRE_TRAINING' | 'POST_TRAINING' | 'RECOVERY_DAY' | 'UNSPECIFIED';
 
 export type EvidenceConfidence = 'LOW'|'MEDIUM'|'HIGH';
+export type MenuEvidenceSource = 'USER_VERIFIED'|'RESTAURANT_PUBLISHED';
 
 export interface RestaurantDiscoveryCandidate {
   provider: 'GOOGLE_PLACES';
@@ -25,6 +26,7 @@ export interface VerifiedMenuEvidence {
   evidenceUrl: string;
   observedAt: string;
   confidence: EvidenceConfidence;
+  source?: MenuEvidenceSource;
   signals: {
     meaningfulProtein: boolean;
     vegetablesOrFruit: boolean;
