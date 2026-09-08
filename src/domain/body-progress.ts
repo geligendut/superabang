@@ -12,6 +12,15 @@ export interface MetricTrend {
   delta: number | null;
 }
 
+
+export function parseLocalizedDecimal(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (trimmed === '') return null;
+  const normalized = trimmed.replace(',', '.');
+  if (!/^\d+(?:\.\d+)?$/.test(normalized)) return Number.NaN;
+  return Number(normalized);
+}
+
 function finitePositive(value: number | null): boolean {
   return value === null || (Number.isFinite(value) && value > 0);
 }

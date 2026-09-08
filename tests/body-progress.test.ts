@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { metricTrend, validateBodyMeasurement, type BodyMeasurement } from '../src/domain/body-progress.ts';
+import { metricTrend, parseLocalizedDecimal, validateBodyMeasurement, type BodyMeasurement } from '../src/domain/body-progress.ts';
 
 test('body measurement permits partial observations but not an empty row', () => {
   assert.deepEqual(validateBodyMeasurement({ weightKg: 87.2, waistCm: null }), []);
@@ -21,4 +21,13 @@ test('trend compares the latest two observations containing that metric only', (
   ];
   assert.deepEqual(metricTrend(rows,'weightKg'), { latest:87.5, previous:88, delta:-0.5 });
   assert.deepEqual(metricTrend(rows,'waistCm'), { latest:104, previous:105, delta:-1 });
+});
+
+
+test('localized decimal parser accepts Indonesian comma and decimal point', () => {
+  assert.equal(parseLocalizedDecimal('86,5'), 86.5);
+  assert.equal(parseLocalizedDecimal('86.5'), 86.5);
+  assert.equal(parseLocalizedDecimal('104,0'), 104);
+  assert.equal(parseLocalizedDecimal(''), null);
+  assert.ok(Number.isNaN(parseLocalizedDecimal('86,5,2') as number));
 });

@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { getSupabaseBrowserClient } from '../../src/backend/supabase-browser';
-import { metricTrend, validateBodyMeasurement, type BodyMeasurement } from '../../src/domain/body-progress';
+import { metricTrend, parseLocalizedDecimal, validateBodyMeasurement, type BodyMeasurement } from '../../src/domain/body-progress';
 
 export default function ProgressPage() {
   const [rows, setRows] = useState<BodyMeasurement[]>([]);
@@ -42,8 +42,8 @@ export default function ProgressPage() {
 
   async function submit(e: FormEvent) {
     e.preventDefault();
-    const weightKg = weight.trim() === '' ? null : Number(weight);
-    const waistCm = waist.trim() === '' ? null : Number(waist);
+    const weightKg = parseLocalizedDecimal(weight);
+    const waistCm = parseLocalizedDecimal(waist);
     const errors = validateBodyMeasurement({ weightKg, waistCm });
     if (errors.length) { setMessage(errors.join(' · ')); return; }
     setSaving(true);
@@ -78,10 +78,10 @@ export default function ProgressPage() {
     <form className="card" onSubmit={submit}>
       <h2>Log measurement</h2>
       <div className="form-grid">
-        <label>Weight (kg)<input inputMode="decimal" type="number" min="30" max="350" step="0.1" value={weight} onChange={e=>setWeight(e.target.value)} placeholder="optional" /></label>
-        <label>Waist (cm)<input inputMode="decimal" type="number" min="40" max="250" step="0.1" value={waist} onChange={e=>setWaist(e.target.value)} placeholder="optional" /></label>
+        <label>Weight (kg)<input inputMode="decimal" type="text" autoComplete="off" value={weight} onChange={e=>setWeight(e.target.value)} placeholder="e.g. 86,5" /></label>
+        <label>Waist (cm)<input inputMode="decimal" type="text" autoComplete="off" value={waist} onChange={e=>setWaist(e.target.value)} placeholder="e.g. 104,5" /></label>
       </div>
-      <p className="muted">Enter at least one metric. Current time is stored as the observation time.</p>
+      <p className="muted">Enter at least one metric. Decimal comma or point is accepted. Current time is stored as the observation time.</p>
       <button className="primary" disabled={saving}>{saving ? 'Saving…' : 'Save measurement'}</button>
     </form>
 

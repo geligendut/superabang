@@ -1,4 +1,4 @@
-const CACHE = 'superabang-shell-v6';
+const CACHE = 'superabang-shell-v7';
 const SHELL = ['/', '/workout/today', '/history',
   '/progress', '/auth', '/manifest.webmanifest'];
 
