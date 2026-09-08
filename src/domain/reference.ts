@@ -7,6 +7,8 @@ export interface EquipmentReference {
   name: string;
   kind: EquipmentKind;
   loadKg?: number;
+  quantity?: number;
+  verification?: 'VERIFIED_USER_REPORTED' | 'DEVELOPMENT_ONLY';
   active: boolean;
 }
 
@@ -41,7 +43,8 @@ export interface WorkoutPrescription {
 }
 
 export const EQUIPMENT_REFERENCE: EquipmentReference[] = [
-  { id: 'olympic-bar-20', name: 'Olympic Barbell 20 kg', kind: 'BARBELL', loadKg: 20, active: true },
+  { id: 'olympic-bar-20', name: 'Olympic Barbell 20 kg', kind: 'BARBELL', loadKg: 20, verification: 'VERIFIED_USER_REPORTED', active: true },
+  { id: 'microplate-0_5-pair', name: 'Microplate 0.5 kg', kind: 'PLATE', loadKg: 0.5, quantity: 2, verification: 'VERIFIED_USER_REPORTED', active: true },
   { id: 'flat-adjustable-bench', name: 'Bench', kind: 'BENCH', active: true },
   { id: 'squat-rack', name: 'Squat Rack', kind: 'RACK', active: true },
   { id: 'cable-station', name: 'Cable Station', kind: 'CABLE', active: true }
@@ -55,6 +58,10 @@ export const EXERCISE_REFERENCE: ExerciseReference[] = [
 /**
  * Synthetic plate inventory for development only. Do not treat as Anton's canonical inventory.
  */
+export const VERIFIED_INCREMENTAL_PLATE_INVENTORY = [
+  { weightKg: 0.5, quantity: 2 }
+];
+
 export const SYNTHETIC_PLATE_INVENTORY = [
   { weightKg: 20, quantity: 2 },
   { weightKg: 10, quantity: 2 },
