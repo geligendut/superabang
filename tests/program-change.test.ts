@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildProgramChangeDraft } from '../src/domain/program-change.ts';
+import type { WorkoutPrescription } from '../src/domain/reference.ts';
+import type { TrainingProgressionAssessment } from '../src/domain/training-progression.ts';
 
-const prescription = {
+const prescription: WorkoutPrescription = {
   workoutId: 'w1',
   programVersionRef: 'v1',
   name: 'Test',
@@ -18,7 +20,7 @@ const prescription = {
 };
 
 test('safety block produces no program change', () => {
-  const assessment = {
+  const assessment: TrainingProgressionAssessment = {
     sessionId:'s1', ruleVersion:'b7-progression-0.1.0', ruleStatus:'PROVISIONAL',
     globalSafetyAction:'BLOCK_PROGRESSION',
     exercises:[{exerciseId:'bench-press', disposition:'BLOCK', currentTargetLoadKg:50, completedWorkingSets:0, prescribedWorkingSets:3, reason:'blocked', evidenceRefs:['set:x']}]
@@ -29,7 +31,7 @@ test('safety block produces no program change', () => {
 });
 
 test('eligible progression changes only working-set load', () => {
-  const assessment = {
+  const assessment: TrainingProgressionAssessment = {
     sessionId:'s2', ruleVersion:'b7-progression-0.1.0', ruleStatus:'PROVISIONAL',
     globalSafetyAction:'ELIGIBLE_TO_PROGRESS',
     exercises:[{exerciseId:'bench-press', disposition:'PROGRESS_CANDIDATE', currentTargetLoadKg:50, suggestedLoadKg:51, completedWorkingSets:3, prescribedWorkingSets:3, maxWorkingRpe:8, reason:'eligible', evidenceRefs:['set:a','set:b','set:c']}]
@@ -42,7 +44,7 @@ test('eligible progression changes only working-set load', () => {
 });
 
 test('eligible assessment without exact suggested load does not invent change', () => {
-  const assessment = {
+  const assessment: TrainingProgressionAssessment = {
     sessionId:'s3', ruleVersion:'b7-progression-0.1.0', ruleStatus:'PROVISIONAL',
     globalSafetyAction:'ELIGIBLE_TO_PROGRESS',
     exercises:[{exerciseId:'bench-press', disposition:'PROGRESS_CANDIDATE', currentTargetLoadKg:50, completedWorkingSets:3, prescribedWorkingSets:3, reason:'eligible', evidenceRefs:[]}]
