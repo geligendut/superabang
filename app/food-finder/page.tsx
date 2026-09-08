@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useState } from 'react';
 import { getSupabaseBrowserClient } from '@/src/backend/supabase-browser';
 import {
+import FoodFinderMap from './FoodFinderMap';
   directionsUrl,
   rankFoodFinderCandidates,
   type RestaurantDiscoveryCandidate,
@@ -263,10 +264,6 @@ export default function FoodFinderPage() {
     </div>)}
 
     <h2>Map</h2>
-    <div className="card">
-      <p><strong>Map provider not activated in B10 foundation.</strong></p>
-      <p className="muted">The same candidate coordinates are available for the map layer, but no fake map or mismatched candidate set is rendered. Browser map-provider activation is a separate operational step.</p>
-      {ranked.map((c, i) => <div key={c.place.placeId}>{i+1}. {c.place.name} · {c.place.lat.toFixed(5)}, {c.place.lng.toFixed(5)}</div>)}
-    </div>
+    <FoodFinderMap ranked={ranked} />
   </main>;
 }
