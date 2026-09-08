@@ -19,11 +19,12 @@ const TABLES = [
   'body_measurement', 'nutrition_meal', 'food_menu_evidence',
 ] as const;
 
+const EXPORT_EVIDENCE_TYPE = 'ACCOUNT_EXPORT_V1';
+
 export default function CutoverReadinessPage() {
   const [checks, setChecks] = useState<GateCheck[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState('');
-  const [exportReady, setExportReady] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -39,14 +40,17 @@ export default function CutoverReadinessPage() {
       const [
         { data: currentRows, error: currentError },
         { data: plannedRows, error: plannedError },
+        { data: exportEvidence, error: exportEvidenceError },
         localHistory,
       ] = await Promise.all([
         supabase.from('program_version').select('id,version,status').eq('status','CURRENT'),
         supabase.from('program_version').select('id,version,status').eq('status','PLANNED'),
+        supabase.from('cutover_evidence').select('status,observed_at,metadata').eq('evidence_type', EXPORT_EVIDENCE_TYPE).maybeSingle(),
         listWorkoutHistory(ownerUserId),
       ]);
       if (currentError) throw currentError;
       if (plannedError) throw plannedError;
+      if (exportEvidenceError) throw exportEvidenceError;
 
       const { count: serverHistoryCount, error: historyError } = await supabase
         .from('workout_session')
@@ -58,13 +62,15 @@ export default function CutoverReadinessPage() {
       const plannedCount = plannedRows?.length ?? 0;
       const localCount = localHistory.length;
       const serverCount = serverHistoryCount ?? 0;
+      const exportPassed = exportEvidence?.status === 'PASS';
+      const exportObservedAt = exportEvidence?.observed_at ? new Date(exportEvidence.observed_at).toLocaleString() : null;
 
       setChecks([
         { id:'auth', label:'Authenticated account', status:'PASS', detail:'Account-scoped evaluation is active.' },
         { id:'current', label:'Exactly one CURRENT program', status: currentCount === 1 ? 'PASS' : 'BLOCKED', detail:`CURRENT versions visible to this account: ${currentCount}.` },
         { id:'planned', label:'No unresolved PLANNED version', status: plannedCount === 0 ? 'PASS' : 'BLOCKED', detail:`PLANNED versions visible to this account: ${plannedCount}.` },
         { id:'sync', label:'Completed workout reconciliation', status: localCount === serverCount ? 'PASS' : 'BLOCKED', detail:`Local completed history: ${localCount}; server completed history: ${serverCount}.` },
-        { id:'export', label:'Account export executed', status: exportReady ? 'PASS' : 'PENDING', detail: exportReady ? 'A JSON export was generated in this browser session.' : 'Generate and retain an account export before cutover.' },
+        { id:'export', label:'Account export executed', status: exportPassed ? 'PASS' : 'PENDING', detail: exportPassed ? `Persistent account-scoped export evidence recorded${exportObservedAt ? ` at ${exportObservedAt}` : ''}.` : 'Generate and retain an account export before cutover.' },
         { id:'canonical', label:'Health canonical reconciliation', status:'PENDING', detail:'Existing Health workflow / Master Record remains authoritative until explicit reconciliation and cutover approval.' },
       ]);
     } catch (error) {
@@ -74,7 +80,7 @@ export default function CutoverReadinessPage() {
     }
   }
 
-  useEffect(() => { load(); }, [exportReady]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const summary = useMemo(() => {
     const blocked = checks.filter(c => c.status === 'BLOCKED').length;
@@ -87,12 +93,15 @@ export default function CutoverReadinessPage() {
     try {
       const ownerUserId = await getLocalOwnerUserId();
       if (!ownerUserId) throw new Error('AUTH_REQUIRED');
+
       const supabase = getSupabaseBrowserClient();
+      const exportedAt = new Date().toISOString();
       const payload: Record<string, unknown> = {
         exportVersion: 'superabang-account-export-0.1.0',
-        exportedAt: new Date().toISOString(),
+        exportedAt,
         canonicalStatus: 'DOGFOOD_NOT_CANONICAL',
       };
+
       for (const table of TABLES) {
         const { data, error } = await supabase.from(table).select('*');
         if (error) throw new Error(`${table}: ${error.message}`);
@@ -104,13 +113,26 @@ export default function CutoverReadinessPage() {
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `superabang-account-export-${new Date().toISOString().slice(0,10)}.json`;
+      link.download = `superabang-account-export-${exportedAt.slice(0,10)}.json`;
       document.body.appendChild(link);
       link.click();
       link.remove();
       URL.revokeObjectURL(url);
-      setExportReady(true);
-      setMessage('Account-scoped export generated. Keep the file until cutover/recovery testing is complete.');
+
+      const { error: evidenceError } = await supabase.from('cutover_evidence').upsert({
+        user_id: ownerUserId,
+        evidence_type: EXPORT_EVIDENCE_TYPE,
+        status: 'PASS',
+        observed_at: exportedAt,
+        metadata: {
+          exportVersion: 'superabang-account-export-0.1.0',
+          canonicalStatus: 'DOGFOOD_NOT_CANONICAL',
+        },
+      }, { onConflict: 'user_id,evidence_type' });
+      if (evidenceError) throw evidenceError;
+
+      setMessage('Account-scoped export generated and persistent evidence recorded. Keep the file until cutover/recovery testing is complete.');
+      await load();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     }
