@@ -21,6 +21,19 @@ const TABLES = [
 
 const EXPORT_EVIDENCE_TYPE = 'ACCOUNT_EXPORT_V1';
 
+function describeError(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  if (error && typeof error === 'object') {
+    const value = error as { code?: unknown; message?: unknown; details?: unknown; hint?: unknown };
+    const parts = [value.code, value.message, value.details, value.hint]
+      .filter((part): part is string => typeof part === 'string' && part.length > 0);
+    if (parts.length) return parts.join(' · ');
+    try { return JSON.stringify(error); } catch { return 'Unknown error object'; }
+  }
+  return String(error);
+}
+
 export default function CutoverReadinessPage() {
   const [checks, setChecks] = useState<GateCheck[]>([]);
   const [loading, setLoading] = useState(true);
@@ -74,7 +87,7 @@ export default function CutoverReadinessPage() {
         { id:'canonical', label:'Health canonical reconciliation', status:'PENDING', detail:'Existing Health workflow / Master Record remains authoritative until explicit reconciliation and cutover approval.' },
       ]);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
+      setMessage(describeError(error));
     } finally {
       setLoading(false);
     }
@@ -119,22 +132,17 @@ export default function CutoverReadinessPage() {
       link.remove();
       URL.revokeObjectURL(url);
 
-      const { error: evidenceError } = await supabase.from('cutover_evidence').upsert({
-        user_id: ownerUserId,
-        evidence_type: EXPORT_EVIDENCE_TYPE,
-        status: 'PASS',
-        observed_at: exportedAt,
-        metadata: {
-          exportVersion: 'superabang-account-export-0.1.0',
-          canonicalStatus: 'DOGFOOD_NOT_CANONICAL',
-        },
-      }, { onConflict: 'user_id,evidence_type' });
+      const { error: evidenceError } = await supabase.rpc('record_cutover_export_evidence', {
+        p_export_version: 'superabang-account-export-0.1.0',
+        p_canonical_status: 'DOGFOOD_NOT_CANONICAL',
+        p_observed_at: exportedAt,
+      });
       if (evidenceError) throw evidenceError;
 
       setMessage('Account-scoped export generated and persistent evidence recorded. Keep the file until cutover/recovery testing is complete.');
       await load();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
+      setMessage(describeError(error));
     }
   }
 
