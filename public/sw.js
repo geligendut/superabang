@@ -1,4 +1,4 @@
-const CACHE = 'superabang-shell-v4';
+const CACHE = 'superabang-shell-v5';
 const SHELL = ['/', '/workout/today', '/history', '/auth', '/manifest.webmanifest'];
 
 self.addEventListener('install', event => {

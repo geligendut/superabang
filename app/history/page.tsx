@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { listWorkoutHistory, type OfflineWorkoutSession } from '@/src/offline/workout-store';
 import { getSupabaseBrowserClient, isSupabaseConfigured } from '@/src/backend/supabase-browser';
 import { getLocalOwnerUserId } from '@/src/backend/local-owner';
+import { reconcileAuthenticatedServerHistory } from '@/src/sync/reconcile-history';
 import { syncPendingWorkoutHistory } from '@/src/sync/run-sync';
 
 export default function History() {
@@ -22,9 +23,24 @@ export default function History() {
       : 'No completed local guest sessions on this device.');
   }
 
+  async function reconcileThenRefresh(owner: string) {
+    if (!navigator.onLine) return refresh(owner);
+    try {
+      await reconcileAuthenticatedServerHistory();
+    } catch {
+      // Local-first invariant: server recovery failure must not hide or block local history.
+    }
+    await refresh(owner);
+  }
+
   useEffect(() => {
     getLocalOwnerUserId()
-      .then(owner => { setOwnerUserId(owner); setOwnerResolved(true); return refresh(owner); })
+      .then(async owner => {
+        setOwnerUserId(owner);
+        setOwnerResolved(true);
+        await refresh(owner);
+        if (owner) await reconcileThenRefresh(owner);
+      })
       .catch(e => { setOwnerResolved(true); setStatus(String(e)); });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -36,7 +52,9 @@ export default function History() {
       const owner = session?.user.id ?? null;
       setOwnerUserId(owner);
       setSyncStatus('');
-      refresh(owner).catch(e => setStatus(String(e)));
+      refresh(owner)
+        .then(() => owner ? reconcileThenRefresh(owner) : undefined)
+        .catch(e => setStatus(String(e)));
     });
     return () => listener.subscription.unsubscribe();
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -46,7 +64,10 @@ export default function History() {
     if (!configured) return;
     const onOnline = () => {
       if (!ownerUserId) return;
-      syncPendingWorkoutHistory().then(() => refresh(ownerUserId)).catch(() => undefined);
+      syncPendingWorkoutHistory()
+        .then(() => reconcileAuthenticatedServerHistory())
+        .then(() => refresh(ownerUserId))
+        .catch(() => undefined);
     };
     window.addEventListener('online', onOnline);
     return () => window.removeEventListener('online', onOnline);
@@ -61,8 +82,9 @@ export default function History() {
     setSyncStatus('Syncing…');
     try {
       const result = await syncPendingWorkoutHistory();
+      const recovery = await reconcileAuthenticatedServerHistory();
       await refresh(ownerUserId);
-      setSyncStatus(`Sync attempted: ${result.attempted}; synced: ${result.synced}; failed: ${result.failed}; blocked: ${result.blocked}.`);
+      setSyncStatus(`Sync attempted: ${result.attempted}; synced: ${result.synced}; failed: ${result.failed}; blocked: ${result.blocked}. Server history reconciled: ${recovery.reconciled}.`);
     } catch (error) {
       setSyncStatus(error instanceof Error ? error.message : String(error));
     }
@@ -70,7 +92,7 @@ export default function History() {
 
   return <main>
     <h1>History</h1>
-    <p className="muted">Local execution snapshots are account-scoped on this device. App database is not yet canonical.</p>
+    <p className="muted">Local execution snapshots are account-scoped on this device. Signed-in server history can rebuild the local cache. App database is not yet canonical.</p>
     <div className="row">
       {configured && ownerResolved && ownerUserId
         ? <button onClick={syncNow}>Sync now</button>

@@ -27,3 +27,11 @@ This is intentional to avoid mis-attributing historical execution across account
 5. Account B sync must not send Account A's outbox payload.
 6. Return to Account A; its new local session remains visible and syncable.
 7. Server RLS isolation is verified independently.
+
+## Server-backed local history recovery amendment
+
+Dogfood retest showed that quarantining pre-hardening IndexedDB rows prevented cross-account visibility correctly, but also made previously synced legacy rows unavailable to their rightful owner. The recovery model is therefore server-backed reconciliation rather than guessing ownership from whichever account is signed in during migration.
+
+For an authenticated account, History now fetches completed `workout_session` rows through normal Supabase RLS, reconstructs child set/symptom/technique/recommendation snapshots, verifies the returned `user_id` against the authenticated user, and idempotently rebuilds the account-scoped IndexedDB history cache. A quarantined legacy row may be replaced only when a same-session server record proves ownership. A row already owned by another local account is never overwritten.
+
+This recovery path does not change canonical status: the existing Health workflow remains authoritative until the separate Dogfood Cutover Gate is approved.

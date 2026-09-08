@@ -206,6 +206,26 @@ export async function listWorkoutHistory(ownerUserId: string | null): Promise<Of
     .sort((a,b) => (b.completedAt ?? b.updatedAt).localeCompare(a.completedAt ?? a.updatedAt));
 }
 
+/**
+ * Upserts a completed history snapshot only after server RLS has proven ownership.
+ * This may safely replace a quarantined pre-hardening row with the same session id,
+ * but never overwrites a row already owned by a different local account.
+ */
+export async function reconcileHistorySnapshotFromServer(
+  record: OfflineWorkoutSession,
+  expectedOwnerUserId: string
+): Promise<void> {
+  if (record.ownerUserId !== expectedOwnerUserId) throw new Error('SERVER_HISTORY_OWNER_MISMATCH');
+  if (!record.completedAt) throw new Error('SERVER_HISTORY_SESSION_NOT_COMPLETED');
+
+  const existing = await get<OfflineWorkoutSession>(HISTORY_STORE, record.sessionId);
+  if (existing?.ownerUserId !== undefined && existing.ownerUserId !== expectedOwnerUserId) {
+    throw new Error('LOCAL_HISTORY_OWNER_CONFLICT');
+  }
+
+  await put(HISTORY_STORE, { ...record, ownerUserId: expectedOwnerUserId, syncState: 'SYNCED' });
+}
+
 export async function listOutboxOperations(ownerUserId: string): Promise<OutboxOperation[]> {
   const rows = await getAll<OutboxOperation>(OUTBOX_STORE);
   return rows
