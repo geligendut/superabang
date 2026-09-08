@@ -2,37 +2,67 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { listWorkoutHistory, type OfflineWorkoutSession } from '@/src/offline/workout-store';
-import { isSupabaseConfigured } from '@/src/backend/supabase-browser';
+import { getSupabaseBrowserClient, isSupabaseConfigured } from '@/src/backend/supabase-browser';
+import { getLocalOwnerUserId } from '@/src/backend/local-owner';
 import { syncPendingWorkoutHistory } from '@/src/sync/run-sync';
 
 export default function History() {
   const [rows, setRows] = useState<OfflineWorkoutSession[]>([]);
   const [status, setStatus] = useState('Loading local history…');
   const [syncStatus, setSyncStatus] = useState('');
+  const [ownerUserId, setOwnerUserId] = useState<string | null>(null);
+  const [ownerResolved, setOwnerResolved] = useState(false);
   const configured = isSupabaseConfigured();
 
-  async function refresh() {
-    const v = await listWorkoutHistory();
+  async function refresh(owner = ownerUserId) {
+    const v = await listWorkoutHistory(owner);
     setRows(v);
-    setStatus(v.length ? '' : 'No completed local sessions yet.');
+    setStatus(v.length ? '' : owner
+      ? 'No completed local sessions for this signed-in account.'
+      : 'No completed local guest sessions on this device.');
   }
 
-  useEffect(() => { refresh().catch(e => setStatus(String(e))); }, []);
+  useEffect(() => {
+    getLocalOwnerUserId()
+      .then(owner => { setOwnerUserId(owner); setOwnerResolved(true); return refresh(owner); })
+      .catch(e => { setOwnerResolved(true); setStatus(String(e)); });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!configured) return;
+    const supabase = getSupabaseBrowserClient();
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      const owner = session?.user.id ?? null;
+      setOwnerUserId(owner);
+      setSyncStatus('');
+      refresh(owner).catch(e => setStatus(String(e)));
+    });
+    return () => listener.subscription.unsubscribe();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [configured]);
+
   useEffect(() => {
     if (!configured) return;
     const onOnline = () => {
-      syncPendingWorkoutHistory().then(refresh).catch(() => undefined);
+      if (!ownerUserId) return;
+      syncPendingWorkoutHistory().then(() => refresh(ownerUserId)).catch(() => undefined);
     };
     window.addEventListener('online', onOnline);
     return () => window.removeEventListener('online', onOnline);
-  }, [configured]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [configured, ownerUserId]);
 
   async function syncNow() {
+    if (!ownerUserId) {
+      setSyncStatus('Sign in before server sync. Local guest history remains on this device.');
+      return;
+    }
     setSyncStatus('Syncing…');
     try {
       const result = await syncPendingWorkoutHistory();
-      await refresh();
-      setSyncStatus(`Sync attempted: ${result.attempted}; synced: ${result.synced}; failed: ${result.failed}.`);
+      await refresh(ownerUserId);
+      setSyncStatus(`Sync attempted: ${result.attempted}; synced: ${result.synced}; failed: ${result.failed}; blocked: ${result.blocked}.`);
     } catch (error) {
       setSyncStatus(error instanceof Error ? error.message : String(error));
     }
@@ -40,9 +70,11 @@ export default function History() {
 
   return <main>
     <h1>History</h1>
-    <p className="muted">Local execution snapshots remain usable regardless of backend availability. App database is not yet canonical.</p>
+    <p className="muted">Local execution snapshots are account-scoped on this device. App database is not yet canonical.</p>
     <div className="row">
-      {configured ? <button onClick={syncNow}>Sync now</button> : <Link href="/auth"><button>Configure / sign in</button></Link>}
+      {configured && ownerResolved && ownerUserId
+        ? <button onClick={syncNow}>Sync now</button>
+        : <Link href="/auth"><button>{configured ? 'Sign in to sync' : 'Configure / sign in'}</button></Link>}
       <Link href="/auth">Account</Link>
     </div>
     {syncStatus && <div className="card">{syncStatus}</div>}

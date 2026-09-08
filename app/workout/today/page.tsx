@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { EXERCISE_REFERENCE } from '@/src/domain/reference';
 import { SYNTHETIC_M1_WORKOUT } from '@/src/domain/synthetic-seed';
 import { listActiveWorkouts } from '@/src/offline/workout-store';
+import { getLocalOwnerUserId } from '@/src/backend/local-owner';
 
 export default function TodayWorkout() {
   const router = useRouter();
@@ -13,7 +14,7 @@ export default function TodayWorkout() {
   const [status, setStatus] = useState('Checking local active workout…');
 
   useEffect(() => {
-    listActiveWorkouts().then(rows => {
+    getLocalOwnerUserId().then(ownerUserId => listActiveWorkouts(ownerUserId)).then(rows => {
       const match = rows.find(row => row.prescribedSnapshot.workoutId === SYNTHETIC_M1_WORKOUT.workoutId);
       setResumeId(match?.sessionId ?? null);
       setStatus('');

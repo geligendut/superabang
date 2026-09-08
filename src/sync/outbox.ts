@@ -5,6 +5,8 @@ export interface OutboxOperation {
   aggregateType: 'WORKOUT_SESSION';
   aggregateId: string;
   operation: 'UPSERT';
+  /** Local ownership boundary. null = signed-out/local-only guest. */
+  ownerUserId: string | null;
   payload: unknown;
   createdAt: string;
   updatedAt: string;
@@ -17,6 +19,7 @@ export interface OutboxOperation {
 export function createOutboxOperation(input: {
   id: string;
   aggregateId: string;
+  ownerUserId: string | null;
   payload: unknown;
   createdAt?: string;
 }): OutboxOperation {
@@ -26,6 +29,7 @@ export function createOutboxOperation(input: {
     aggregateType: 'WORKOUT_SESSION',
     aggregateId: input.aggregateId,
     operation: 'UPSERT',
+    ownerUserId: input.ownerUserId,
     payload: input.payload,
     createdAt: now,
     updatedAt: now,

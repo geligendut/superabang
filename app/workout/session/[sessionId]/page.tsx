@@ -7,12 +7,15 @@ import { SYNTHETIC_M1_WORKOUT } from '@/src/domain/synthetic-seed';
 import { EXERCISE_REFERENCE } from '@/src/domain/reference';
 import { nextPrescribedSet, summarizeExecution } from '@/src/domain/workout';
 import type { RecommendationSnapshot, SymptomObservation, TechniqueObservation, WorkoutSetLog } from '@/src/domain/types';
+import { getLocalOwnerUserId } from '@/src/backend/local-owner';
 
 const id = () => crypto.randomUUID();
 
 export default function WorkoutSession({ params }: { params: Promise<{ sessionId: string }> }) {
   const [sessionId, setSessionId] = useState('');
   const [session, setSession] = useState<OfflineWorkoutSession | null>(null);
+  const [ownerUserId, setOwnerUserId] = useState<string | null>(null);
+  const [ownerResolved, setOwnerResolved] = useState(false);
   const [loadKg, setLoadKg] = useState(20);
   const [reps, setReps] = useState(10);
   const [rpe, setRpe] = useState(5);
@@ -26,9 +29,14 @@ export default function WorkoutSession({ params }: { params: Promise<{ sessionId
 
   useEffect(() => { params.then(p => setSessionId(p.sessionId)); }, [params]);
   useEffect(() => {
-    if (!sessionId) return;
-    createWorkoutSession(sessionId, SYNTHETIC_M1_WORKOUT).then(setSession).catch(e => setMessage(String(e)));
-  }, [sessionId]);
+    getLocalOwnerUserId()
+      .then(owner => { setOwnerUserId(owner); setOwnerResolved(true); })
+      .catch(e => { setOwnerResolved(true); setMessage(String(e)); });
+  }, []);
+  useEffect(() => {
+    if (!sessionId || !ownerResolved) return;
+    createWorkoutSession(sessionId, SYNTHETIC_M1_WORKOUT, ownerUserId).then(setSession).catch(e => setMessage(String(e)));
+  }, [sessionId, ownerResolved, ownerUserId]);
 
   const exerciseById = useMemo(() => new Map(EXERCISE_REFERENCE.map(e => [e.id, e])), []);
   const next = session ? nextPrescribedSet(session.prescribedSnapshot, session.sets) : undefined;
@@ -60,7 +68,7 @@ export default function WorkoutSession({ params }: { params: Promise<{ sessionId
       id: id(), sessionId, exerciseId: next.exerciseId, flag: techniqueFlag,
       note: techniqueNote || undefined, recordedAt: now
     };
-    const updated = await appendSet(sessionId, set, symptom, technique);
+    const updated = await appendSet(sessionId, ownerUserId, set, symptom, technique);
     setSession(updated);
     const decision = assessNextExposure({ maxRpe: rpe, maxSymptomSeverity: symptomSeverity, anyTechniqueCaution: techniqueFlag === 'CAUTION', formBreakdown: techniqueFlag === 'CAUTION' });
     setAssessment(decision);
@@ -85,7 +93,7 @@ export default function WorkoutSession({ params }: { params: Promise<{ sessionId
       decision,
       evidenceRefs: evidenceRefsForDecision(session)
     };
-    await completeWorkoutSession(sessionId, recommendation, stoppedForSafety ? 'STOPPED_FOR_SAFETY' : 'COMPLETED');
+    await completeWorkoutSession(sessionId, ownerUserId, recommendation, stoppedForSafety ? 'STOPPED_FOR_SAFETY' : 'COMPLETED');
     setAssessment(decision);
     setFinished(true);
     setMessage(stoppedForSafety

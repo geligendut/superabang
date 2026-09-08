@@ -8,12 +8,15 @@ export interface SyncProcessorResult {
   attempted: number;
   synced: number;
   failed: number;
+  blocked: number;
   operations: OutboxOperation[];
 }
 
 /** Pure orchestration; persistence is injected so workout logging never depends on network/provider availability. */
 export async function processOutbox(input: {
   operations: OutboxOperation[];
+  /** Authenticated owner currently allowed to send operations. */
+  expectedOwnerUserId: string;
   transport: SyncTransport;
   persist: (operation: OutboxOperation) => Promise<void>;
   onAggregateSynced?: (aggregateId: string) => Promise<void>;
@@ -21,9 +24,15 @@ export async function processOutbox(input: {
   nowMs?: number;
 }): Promise<SyncProcessorResult> {
   const nowMs = input.nowMs ?? Date.now();
-  const result: SyncProcessorResult = { attempted: 0, synced: 0, failed: 0, operations: [] };
+  const result: SyncProcessorResult = { attempted: 0, synced: 0, failed: 0, blocked: 0, operations: [] };
 
   for (const operation of input.operations) {
+    if (operation.ownerUserId !== input.expectedOwnerUserId) {
+      result.blocked += 1;
+      result.operations.push(operation);
+      continue;
+    }
+
     if (!isOutboxDue(operation, nowMs)) {
       result.operations.push(operation);
       continue;

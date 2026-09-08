@@ -4,6 +4,12 @@ import { createOutboxOperation, type OutboxOperation } from '../sync/outbox';
 
 export interface OfflineWorkoutSession {
   sessionId: string;
+  /**
+   * Local ownership boundary. null = signed-out/local-only guest.
+   * Rows created before B5 local ownership hardening have this field undefined at runtime
+   * and are deliberately quarantined from every account rather than silently claimed.
+   */
+  ownerUserId: string | null;
   prescribedSnapshot: WorkoutPrescription;
   startedAt: string;
   updatedAt: string;
@@ -17,19 +23,38 @@ export interface OfflineWorkoutSession {
 }
 
 const DB_NAME = 'fitness-dogfood';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const ACTIVE_STORE = 'active_workouts';
 const HISTORY_STORE = 'workout_history';
 const OUTBOX_STORE = 'sync_outbox';
+const OWNER_INDEX = 'ownerUserId';
+
+function ensureOwnerIndex(store: IDBObjectStore) {
+  if (!store.indexNames.contains(OWNER_INDEX)) store.createIndex(OWNER_INDEX, OWNER_INDEX, { unique: false });
+}
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
-      if (!db.objectStoreNames.contains(ACTIVE_STORE)) db.createObjectStore(ACTIVE_STORE, { keyPath: 'sessionId' });
-      if (!db.objectStoreNames.contains(HISTORY_STORE)) db.createObjectStore(HISTORY_STORE, { keyPath: 'sessionId' });
-      if (!db.objectStoreNames.contains(OUTBOX_STORE)) db.createObjectStore(OUTBOX_STORE, { keyPath: 'id' });
+      const tx = req.transaction;
+      if (!tx) throw new Error('INDEXEDDB_UPGRADE_TRANSACTION_MISSING');
+
+      const active = db.objectStoreNames.contains(ACTIVE_STORE)
+        ? tx.objectStore(ACTIVE_STORE)
+        : db.createObjectStore(ACTIVE_STORE, { keyPath: 'sessionId' });
+      const history = db.objectStoreNames.contains(HISTORY_STORE)
+        ? tx.objectStore(HISTORY_STORE)
+        : db.createObjectStore(HISTORY_STORE, { keyPath: 'sessionId' });
+      const outbox = db.objectStoreNames.contains(OUTBOX_STORE)
+        ? tx.objectStore(OUTBOX_STORE)
+        : db.createObjectStore(OUTBOX_STORE, { keyPath: 'id' });
+
+      ensureOwnerIndex(active);
+      ensureOwnerIndex(history);
+      ensureOwnerIndex(outbox);
+      // Legacy rows are intentionally not rewritten. Missing ownerUserId = quarantined legacy data.
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -58,26 +83,49 @@ async function get<T>(store: string, key: string): Promise<T | undefined> {
   return result;
 }
 
-export async function saveActiveWorkout(record: OfflineWorkoutSession): Promise<void> { return put(ACTIVE_STORE, record); }
-export async function loadActiveWorkout(sessionId: string): Promise<OfflineWorkoutSession | undefined> { return get<OfflineWorkoutSession>(ACTIVE_STORE, sessionId); }
-
-export async function listActiveWorkouts(): Promise<OfflineWorkoutSession[]> {
+async function getAll<T>(store: string): Promise<T[]> {
   const db = await openDb();
-  const rows = await new Promise<OfflineWorkoutSession[]>((resolve, reject) => {
-    const req = db.transaction(ACTIVE_STORE, 'readonly').objectStore(ACTIVE_STORE).getAll();
+  const rows = await new Promise<T[]>((resolve, reject) => {
+    const req = db.transaction(store, 'readonly').objectStore(store).getAll();
     req.onsuccess = () => resolve(req.result ?? []);
     req.onerror = () => reject(req.error);
   });
   db.close();
-  return rows.sort((a,b) => b.updatedAt.localeCompare(a.updatedAt));
+  return rows;
 }
 
-export async function createWorkoutSession(sessionId: string, prescribedSnapshot: WorkoutPrescription): Promise<OfflineWorkoutSession> {
-  const existing = await loadActiveWorkout(sessionId);
-  if (existing) return existing;
+function ownedBy<T extends { ownerUserId?: string | null }>(row: T, ownerUserId: string | null): boolean {
+  // Undefined identifies pre-hardening legacy data and never matches an account or guest.
+  return row.ownerUserId !== undefined && row.ownerUserId === ownerUserId;
+}
+
+export async function saveActiveWorkout(record: OfflineWorkoutSession): Promise<void> { return put(ACTIVE_STORE, record); }
+
+export async function loadActiveWorkout(sessionId: string, ownerUserId: string | null): Promise<OfflineWorkoutSession | undefined> {
+  const row = await get<OfflineWorkoutSession>(ACTIVE_STORE, sessionId);
+  return row && ownedBy(row, ownerUserId) ? row : undefined;
+}
+
+export async function listActiveWorkouts(ownerUserId: string | null): Promise<OfflineWorkoutSession[]> {
+  const rows = await getAll<OfflineWorkoutSession>(ACTIVE_STORE);
+  return rows.filter(row => ownedBy(row, ownerUserId)).sort((a,b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+export async function createWorkoutSession(
+  sessionId: string,
+  prescribedSnapshot: WorkoutPrescription,
+  ownerUserId: string | null
+): Promise<OfflineWorkoutSession> {
+  const rawExisting = await get<OfflineWorkoutSession>(ACTIVE_STORE, sessionId);
+  if (rawExisting) {
+    if (!ownedBy(rawExisting, ownerUserId)) throw new Error('LOCAL_SESSION_OWNER_MISMATCH');
+    return rawExisting;
+  }
+
   const now = new Date().toISOString();
   const session: OfflineWorkoutSession = {
     sessionId,
+    ownerUserId,
     prescribedSnapshot,
     startedAt: now,
     updatedAt: now,
@@ -90,9 +138,15 @@ export async function createWorkoutSession(sessionId: string, prescribedSnapshot
   return session;
 }
 
-export async function appendSet(sessionId: string, set: WorkoutSetLog, symptom?: SymptomObservation, technique?: TechniqueObservation): Promise<OfflineWorkoutSession> {
-  const session = await loadActiveWorkout(sessionId);
-  if (!session) throw new Error('ACTIVE_SESSION_NOT_FOUND');
+export async function appendSet(
+  sessionId: string,
+  ownerUserId: string | null,
+  set: WorkoutSetLog,
+  symptom?: SymptomObservation,
+  technique?: TechniqueObservation
+): Promise<OfflineWorkoutSession> {
+  const session = await loadActiveWorkout(sessionId, ownerUserId);
+  if (!session) throw new Error('ACTIVE_SESSION_NOT_FOUND_OR_OWNER_MISMATCH');
   if (session.completedAt) throw new Error('SESSION_ALREADY_COMPLETED');
   const next = {
     ...session,
@@ -108,11 +162,12 @@ export async function appendSet(sessionId: string, set: WorkoutSetLog, symptom?:
 
 export async function completeWorkoutSession(
   sessionId: string,
+  ownerUserId: string | null,
   recommendation?: RecommendationSnapshot,
   completionStatus: 'COMPLETED'|'STOPPED_FOR_SAFETY' = 'COMPLETED'
 ): Promise<OfflineWorkoutSession> {
-  const session = await loadActiveWorkout(sessionId);
-  if (!session) throw new Error('ACTIVE_SESSION_NOT_FOUND');
+  const session = await loadActiveWorkout(sessionId, ownerUserId);
+  if (!session) throw new Error('ACTIVE_SESSION_NOT_FOUND_OR_OWNER_MISMATCH');
   const now = new Date().toISOString();
   const completed: OfflineWorkoutSession = {
     ...session,
@@ -125,6 +180,7 @@ export async function completeWorkoutSession(
   const outbox = createOutboxOperation({
     id: crypto.randomUUID(),
     aggregateId: sessionId,
+    ownerUserId,
     payload: completed,
     createdAt: now,
   });
@@ -143,34 +199,30 @@ export async function completeWorkoutSession(
   return completed;
 }
 
-export async function listWorkoutHistory(): Promise<OfflineWorkoutSession[]> {
-  const db = await openDb();
-  const rows = await new Promise<OfflineWorkoutSession[]>((resolve, reject) => {
-    const req = db.transaction(HISTORY_STORE, 'readonly').objectStore(HISTORY_STORE).getAll();
-    req.onsuccess = () => resolve(req.result ?? []);
-    req.onerror = () => reject(req.error);
-  });
-  db.close();
-  return rows.sort((a,b) => (b.completedAt ?? b.updatedAt).localeCompare(a.completedAt ?? a.updatedAt));
+export async function listWorkoutHistory(ownerUserId: string | null): Promise<OfflineWorkoutSession[]> {
+  const rows = await getAll<OfflineWorkoutSession>(HISTORY_STORE);
+  return rows
+    .filter(row => ownedBy(row, ownerUserId))
+    .sort((a,b) => (b.completedAt ?? b.updatedAt).localeCompare(a.completedAt ?? a.updatedAt));
 }
 
-export async function listOutboxOperations(): Promise<OutboxOperation[]> {
-  const db = await openDb();
-  const rows = await new Promise<OutboxOperation[]>((resolve, reject) => {
-    const req = db.transaction(OUTBOX_STORE, 'readonly').objectStore(OUTBOX_STORE).getAll();
-    req.onsuccess = () => resolve(req.result ?? []);
-    req.onerror = () => reject(req.error);
-  });
-  db.close();
-  return rows.sort((a,b) => a.createdAt.localeCompare(b.createdAt));
+export async function listOutboxOperations(ownerUserId: string): Promise<OutboxOperation[]> {
+  const rows = await getAll<OutboxOperation>(OUTBOX_STORE);
+  return rows
+    .filter(row => row.ownerUserId === ownerUserId)
+    .sort((a,b) => a.createdAt.localeCompare(b.createdAt));
 }
 
 export async function saveOutboxOperation(operation: OutboxOperation): Promise<void> {
   return put(OUTBOX_STORE, operation);
 }
 
-export async function markHistorySyncState(sessionId: string, syncState: OfflineWorkoutSession['syncState']): Promise<void> {
+export async function markHistorySyncState(
+  sessionId: string,
+  ownerUserId: string,
+  syncState: OfflineWorkoutSession['syncState']
+): Promise<void> {
   const history = await get<OfflineWorkoutSession>(HISTORY_STORE, sessionId);
-  if (!history) return;
+  if (!history || !ownedBy(history, ownerUserId)) return;
   await put(HISTORY_STORE, { ...history, syncState, updatedAt: new Date().toISOString() });
 }
