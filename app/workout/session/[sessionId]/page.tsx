@@ -4,10 +4,11 @@ import Link from 'next/link';
 import { appendSet, completeWorkoutSession, createWorkoutSession, type OfflineWorkoutSession } from '@/src/offline/workout-store';
 import { assessNextExposure, evidenceRefsForDecision, summarizeSessionForDecision, type ExposureAssessment } from '@/src/domain/safety-decision';
 import { SYNTHETIC_M1_WORKOUT } from '@/src/domain/synthetic-seed';
-import { EXERCISE_REFERENCE } from '@/src/domain/reference';
+import { EXERCISE_REFERENCE, type WorkoutPrescription } from '@/src/domain/reference';
 import { nextPrescribedSet, summarizeExecution } from '@/src/domain/workout';
 import type { RecommendationSnapshot, SymptomObservation, TechniqueObservation, WorkoutSetLog } from '@/src/domain/types';
 import { getLocalOwnerUserId } from '@/src/backend/local-owner';
+import { resolveWorkoutPrescription } from '@/src/program/current-program';
 
 const id = () => crypto.randomUUID();
 
@@ -16,6 +17,7 @@ export default function WorkoutSession({ params }: { params: Promise<{ sessionId
   const [session, setSession] = useState<OfflineWorkoutSession | null>(null);
   const [ownerUserId, setOwnerUserId] = useState<string | null>(null);
   const [ownerResolved, setOwnerResolved] = useState(false);
+  const [prescription, setPrescription] = useState<WorkoutPrescription | null>(null);
   const [loadKg, setLoadKg] = useState(20);
   const [reps, setReps] = useState(10);
   const [rpe, setRpe] = useState(5);
@@ -29,14 +31,18 @@ export default function WorkoutSession({ params }: { params: Promise<{ sessionId
 
   useEffect(() => { params.then(p => setSessionId(p.sessionId)); }, [params]);
   useEffect(() => {
-    getLocalOwnerUserId()
-      .then(owner => { setOwnerUserId(owner); setOwnerResolved(true); })
+    Promise.all([getLocalOwnerUserId(), resolveWorkoutPrescription(SYNTHETIC_M1_WORKOUT)])
+      .then(([owner, resolved]) => {
+        setOwnerUserId(owner);
+        setPrescription(resolved);
+        setOwnerResolved(true);
+      })
       .catch(e => { setOwnerResolved(true); setMessage(String(e)); });
   }, []);
   useEffect(() => {
-    if (!sessionId || !ownerResolved) return;
-    createWorkoutSession(sessionId, SYNTHETIC_M1_WORKOUT, ownerUserId).then(setSession).catch(e => setMessage(String(e)));
-  }, [sessionId, ownerResolved, ownerUserId]);
+    if (!sessionId || !ownerResolved || !prescription) return;
+    createWorkoutSession(sessionId, prescription, ownerUserId).then(setSession).catch(e => setMessage(String(e)));
+  }, [sessionId, ownerResolved, ownerUserId, prescription]);
 
   const exerciseById = useMemo(() => new Map(EXERCISE_REFERENCE.map(e => [e.id, e])), []);
   const next = session ? nextPrescribedSet(session.prescribedSnapshot, session.sets) : undefined;
@@ -111,6 +117,7 @@ export default function WorkoutSession({ params }: { params: Promise<{ sessionId
   return <main>
     <h1>Active workout</h1>
     <p className="muted">Offline-first set logging. AI is not required for logging or completion.</p>
+    {session && <div className="card"><div className="muted">Program snapshot: {session.prescribedSnapshot.programVersionRef}</div></div>}
     {summary && <div className="card"><strong>{summary.loggedSets} / {summary.prescribedSets} prescribed sets logged</strong></div>}
 
     {next ? <>

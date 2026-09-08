@@ -2,23 +2,28 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { EXERCISE_REFERENCE } from '@/src/domain/reference';
+import { EXERCISE_REFERENCE, type WorkoutPrescription } from '@/src/domain/reference';
 import { SYNTHETIC_M1_WORKOUT } from '@/src/domain/synthetic-seed';
 import { listActiveWorkouts } from '@/src/offline/workout-store';
 import { getLocalOwnerUserId } from '@/src/backend/local-owner';
+import { resolveWorkoutPrescription } from '@/src/program/current-program';
 
 export default function TodayWorkout() {
   const router = useRouter();
   const exerciseById = useMemo(() => new Map(EXERCISE_REFERENCE.map(e => [e.id, e])), []);
   const [resumeId, setResumeId] = useState<string | null>(null);
-  const [status, setStatus] = useState('Checking local active workout…');
+  const [prescription, setPrescription] = useState<WorkoutPrescription>(SYNTHETIC_M1_WORKOUT);
+  const [status, setStatus] = useState('Checking current program and local active workout…');
 
   useEffect(() => {
-    getLocalOwnerUserId().then(ownerUserId => listActiveWorkouts(ownerUserId)).then(rows => {
-      const match = rows.find(row => row.prescribedSnapshot.workoutId === SYNTHETIC_M1_WORKOUT.workoutId);
-      setResumeId(match?.sessionId ?? null);
-      setStatus('');
-    }).catch(error => setStatus(String(error)));
+    Promise.all([getLocalOwnerUserId(), resolveWorkoutPrescription(SYNTHETIC_M1_WORKOUT)])
+      .then(async ([ownerUserId, resolved]) => {
+        setPrescription(resolved);
+        const rows = await listActiveWorkouts(ownerUserId);
+        const match = rows.find(row => row.prescribedSnapshot.workoutId === resolved.workoutId);
+        setResumeId(match?.sessionId ?? null);
+        setStatus('');
+      }).catch(error => setStatus(String(error)));
   }, []);
 
   function startOrResume() {
@@ -26,14 +31,20 @@ export default function TodayWorkout() {
     router.push(`/workout/session/${sessionId}`);
   }
 
+  const isSyntheticFallback = prescription.programVersionRef === SYNTHETIC_M1_WORKOUT.programVersionRef;
+
   return <main>
     <h1>Prescribed workout</h1>
-    <p className="muted">Synthetic development seed — current Health workflow remains authoritative.</p>
+    <p className="muted">
+      {isSyntheticFallback
+        ? 'Synthetic development seed — current Health workflow remains authoritative.'
+        : 'Loaded from the account CURRENT app program version. Health canonical cutover has not occurred.'}
+    </p>
     <div className="card">
-      <strong>{SYNTHETIC_M1_WORKOUT.name}</strong>
-      <div className="muted">Program snapshot: {SYNTHETIC_M1_WORKOUT.programVersionRef}</div>
+      <strong>{prescription.name}</strong>
+      <div className="muted">Program snapshot: {prescription.programVersionRef}</div>
     </div>
-    {SYNTHETIC_M1_WORKOUT.exercises.map((e) => <div className="card" key={e.exerciseId}>
+    {prescription.exercises.map((e) => <div className="card" key={e.exerciseId}>
       <strong>{exerciseById.get(e.exerciseId)?.name ?? e.exerciseId}</strong>
       <p className="muted">{e.note}</p>
       {e.sets.map((s, i) => <div className="set-line" key={s.id}>
