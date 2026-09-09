@@ -1,0 +1,4 @@
+-- Repository lineage for B13 execution candidate staging.
+-- Live schema already applied.
+-- Creates canonical_program_candidate, health_source_session_stage,
+-- canonical_safety_context and stage_b13_execution_candidate_v1(...).
