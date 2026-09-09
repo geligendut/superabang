@@ -13,6 +13,17 @@ interface GateCheck {
   detail: string;
 }
 
+interface ExportEvidenceRow {
+  status?: 'PASS'|'PENDING'|'BLOCKED';
+  observed_at?: string;
+  metadata?: {
+    phase?: string;
+    exportVersion?: string;
+    canonicalStatus?: string;
+    confirmedAt?: string;
+  };
+}
+
 const TABLES = [
   'program_version', 'workout_session', 'workout_set_log',
   'symptom_observation', 'technique_observation', 'recommendation_snapshot',
@@ -38,6 +49,7 @@ export default function CutoverReadinessPage() {
   const [checks, setChecks] = useState<GateCheck[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState('');
+  const [exportEvidence, setExportEvidence] = useState<ExportEvidenceRow | null>(null);
 
   async function load() {
     setLoading(true);
@@ -46,6 +58,7 @@ export default function CutoverReadinessPage() {
       const ownerUserId = await getLocalOwnerUserId();
       if (!ownerUserId) {
         setChecks([{ id:'auth', label:'Authenticated account', status:'BLOCKED', detail:'Sign in is required before cutover readiness can be evaluated.' }]);
+        setExportEvidence(null);
         return;
       }
 
@@ -53,7 +66,7 @@ export default function CutoverReadinessPage() {
       const [
         { data: currentRows, error: currentError },
         { data: plannedRows, error: plannedError },
-        { data: exportEvidence, error: exportEvidenceError },
+        { data: evidence, error: exportEvidenceError },
         localHistory,
       ] = await Promise.all([
         supabase.from('program_version').select('id,version,status').eq('status','CURRENT'),
@@ -71,19 +84,32 @@ export default function CutoverReadinessPage() {
         .not('completed_at','is',null);
       if (historyError) throw historyError;
 
+      const typedEvidence = (evidence ?? null) as ExportEvidenceRow | null;
+      setExportEvidence(typedEvidence);
+
       const currentCount = currentRows?.length ?? 0;
       const plannedCount = plannedRows?.length ?? 0;
       const localCount = localHistory.length;
       const serverCount = serverHistoryCount ?? 0;
-      const exportPassed = exportEvidence?.status === 'PASS';
-      const exportObservedAt = exportEvidence?.observed_at ? new Date(exportEvidence.observed_at).toLocaleString() : null;
+      const exportPassed = typedEvidence?.status === 'PASS' && typedEvidence?.metadata?.phase === 'CONFIRMED_SAVED';
+      const exportPrepared = typedEvidence?.status === 'PENDING' && typedEvidence?.metadata?.phase === 'PREPARED';
+      const exportObservedAt = typedEvidence?.observed_at ? new Date(typedEvidence.observed_at).toLocaleString() : null;
 
       setChecks([
         { id:'auth', label:'Authenticated account', status:'PASS', detail:'Account-scoped evaluation is active.' },
         { id:'current', label:'Exactly one CURRENT program', status: currentCount === 1 ? 'PASS' : 'BLOCKED', detail:`CURRENT versions visible to this account: ${currentCount}.` },
         { id:'planned', label:'No unresolved PLANNED version', status: plannedCount === 0 ? 'PASS' : 'BLOCKED', detail:`PLANNED versions visible to this account: ${plannedCount}.` },
         { id:'sync', label:'Completed workout reconciliation', status: localCount === serverCount ? 'PASS' : 'BLOCKED', detail:`Local completed history: ${localCount}; server completed history: ${serverCount}.` },
-        { id:'export', label:'Account export executed', status: exportPassed ? 'PASS' : 'PENDING', detail: exportPassed ? `Persistent account-scoped export evidence recorded${exportObservedAt ? ` at ${exportObservedAt}` : ''}.` : 'Generate and retain an account export before cutover.' },
+        {
+          id:'export',
+          label:'Account export executed',
+          status: exportPassed ? 'PASS' : 'PENDING',
+          detail: exportPassed
+            ? `Export retention explicitly confirmed${exportObservedAt ? ` at ${exportObservedAt}` : ''}.`
+            : exportPrepared
+              ? 'Export was prepared and download was initiated. Confirm the file is saved on this device.'
+              : 'Generate and retain an account export before cutover.'
+        },
         { id:'canonical', label:'Health canonical reconciliation', status:'PENDING', detail:'Existing Health workflow / Master Record remains authoritative until explicit reconciliation and cutover approval.' },
       ]);
     } catch (error) {
@@ -123,6 +149,14 @@ export default function CutoverReadinessPage() {
       payload.localWorkoutHistory = await listWorkoutHistory(ownerUserId);
 
       const blob = new Blob([JSON.stringify(payload, null, 2)], { type:'application/json' });
+
+      const { error: prepareError } = await supabase.rpc('prepare_cutover_export_evidence', {
+        p_export_version: 'superabang-account-export-0.1.0',
+        p_canonical_status: 'DOGFOOD_NOT_CANONICAL',
+        p_observed_at: exportedAt,
+      });
+      if (prepareError) throw prepareError;
+
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
@@ -132,19 +166,33 @@ export default function CutoverReadinessPage() {
       link.remove();
       URL.revokeObjectURL(url);
 
-      const { error: evidenceError } = await supabase.rpc('record_cutover_export_evidence', {
-        p_export_version: 'superabang-account-export-0.1.0',
-        p_canonical_status: 'DOGFOOD_NOT_CANONICAL',
-        p_observed_at: exportedAt,
-      });
-      if (evidenceError) throw evidenceError;
-
-      setMessage('Account-scoped export generated and persistent evidence recorded. Keep the file until cutover/recovery testing is complete.');
+      setMessage('Export prepared and download initiated. After saving the file, return here and confirm it is retained.');
       await load();
     } catch (error) {
       setMessage(describeError(error));
     }
   }
+
+  async function confirmExportSaved() {
+    setMessage('Confirming retained export…');
+    try {
+      const ownerUserId = await getLocalOwnerUserId();
+      if (!ownerUserId) throw new Error('AUTH_REQUIRED');
+
+      const supabase = getSupabaseBrowserClient();
+      const { error } = await supabase.rpc('confirm_cutover_export_saved', {
+        p_confirmed_at: new Date().toISOString(),
+      });
+      if (error) throw error;
+
+      setMessage('Export retention confirmed and persistent evidence recorded.');
+      await load();
+    } catch (error) {
+      setMessage(describeError(error));
+    }
+  }
+
+  const exportPrepared = exportEvidence?.status === 'PENDING' && exportEvidence?.metadata?.phase === 'PREPARED';
 
   return <main>
     <h1>Cutover readiness</h1>
@@ -153,6 +201,7 @@ export default function CutoverReadinessPage() {
     {checks.map(check => <div className="card" key={check.id}><h2>{check.status} — {check.label}</h2><p className="muted">{check.detail}</p></div>)}
     <div className="row">
       <button className="primary" onClick={exportAccountData} disabled={loading}>Generate account export</button>
+      {exportPrepared && <button onClick={confirmExportSaved} disabled={loading}>I saved the export</button>}
       <button onClick={load} disabled={loading}>Refresh checks</button>
       <Link href="/"><button>Home</button></Link>
     </div>
