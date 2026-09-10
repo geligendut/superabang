@@ -3,6 +3,7 @@
 import { getSupabaseBrowserClient } from '../backend/supabase-browser';
 import { reconcileHistorySnapshotFromServer } from '../offline/workout-store';
 import { mapServerWorkoutSession, type ServerWorkoutSessionRow } from './server-history';
+import { withTimeout } from '../backend/async-timeout';
 
 const SERVER_HISTORY_SELECT = `
   id,
@@ -29,16 +30,24 @@ export interface HistoryReconciliationResult {
  */
 export async function reconcileAuthenticatedServerHistory(): Promise<HistoryReconciliationResult> {
   const supabase = getSupabaseBrowserClient();
-  const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+  const { data: sessionData, error: sessionError } = await withTimeout(
+    supabase.auth.getSession(),
+    3_000,
+    'History session lookup',
+  );
   if (sessionError) throw sessionError;
   const ownerUserId = sessionData.session?.user.id;
   if (!ownerUserId) throw new Error('SIGN_IN_REQUIRED_FOR_HISTORY_RECONCILIATION');
 
-  const { data, error } = await supabase
-    .from('workout_session')
-    .select(SERVER_HISTORY_SELECT)
-    .not('completed_at', 'is', null)
-    .order('completed_at', { ascending: false });
+  const { data, error } = await withTimeout(
+    supabase
+      .from('workout_session')
+      .select(SERVER_HISTORY_SELECT)
+      .not('completed_at', 'is', null)
+      .order('completed_at', { ascending: false }),
+    8_000,
+    'Server history lookup',
+  );
 
   if (error) throw new Error(`SERVER_HISTORY_FETCH_FAILED:${error.message}`);
 

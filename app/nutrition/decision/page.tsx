@@ -89,14 +89,13 @@ export default function NutritionDecisionPage() {
 
       const next = buildContextualNutritionDecision(input);
       const id = crypto.randomUUID();
-      const { error } = await supabase.from('recommendation_snapshot').insert({
-        id,
-        user_id: user.id,
-        recommendation_type: 'NUTRITION_CONTEXTUAL',
-        rule_version: next.ruleVersion,
-        input_snapshot: nutritionDecisionInputSnapshot(input),
-        decision: next,
-        evidence_refs: next.evidenceRefs,
+      const { error } = await supabase.rpc('create_nutrition_recommendation_snapshot', {
+        p_id: id,
+        p_rule_version: next.ruleVersion,
+        p_input_snapshot: nutritionDecisionInputSnapshot(input),
+        p_decision: next,
+        p_evidence_refs: next.evidenceRefs,
+        p_created_at: new Date().toISOString(),
       });
       if (error) throw error;
 

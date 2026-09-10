@@ -1,4 +1,4 @@
-const CACHE = 'superabang-shell-v14';
+const CACHE = 'superabang-shell-v15';
 const SHELL = ['/', '/workout/today', '/history',
   '/training-progression', '/progress', '/nutrition', '/nutrition/decision', '/food-finder', '/auth', '/manifest.webmanifest'];
 
@@ -30,7 +30,8 @@ self.addEventListener('fetch', event => {
         })
         .catch(async () => {
           const exact = await caches.match(event.request);
-          return exact || caches.match('/');
+          const routeShell = await caches.match(url.pathname);
+          return exact || routeShell || caches.match('/');
         })
     );
     return;

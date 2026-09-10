@@ -11,6 +11,13 @@ import { buildProgramChangeDraft, type ProgramChangeDraft } from '@/src/domain/p
 import { SYNTHETIC_M1_WORKOUT } from '@/src/domain/synthetic-seed';
 import { EXERCISE_REFERENCE } from '@/src/domain/reference';
 import { loadCurrentProgram, loadPlannedProgram, type ProgramVersionRow } from '@/src/program/current-program';
+import { isCanonicalProgramSnapshot, isWorkoutPrescription } from '@/src/program/canonical-rotation';
+import {
+  applyPersistentSafetyBlocks,
+  blockProgressionWhenSafetyUnavailable,
+  loadActiveCanonicalSafetyBlocks,
+  type CanonicalSafetyBlock,
+} from '@/src/program/canonical-safety';
 
 const DOGFOOD_PROGRAM_ID = '9b11d000-0000-4000-8000-000000000001';
 
@@ -28,17 +35,30 @@ export default function ProgramChangePage() {
   const [draft, setDraft] = useState<ProgramChangeDraft|null>(null);
   const [status, setStatus] = useState('Loading program state…');
   const [busy, setBusy] = useState(false);
+  const [safetyBlocks, setSafetyBlocks] = useState<CanonicalSafetyBlock[]>([]);
+  const [safetyVerified, setSafetyVerified] = useState(false);
 
   const source = useMemo(() => history.find(h => h.sessionId === sourceId) ?? null, [history, sourceId]);
+  const canonicalRotation = current?.prescription_snapshot && isCanonicalProgramSnapshot(current.prescription_snapshot)
+    ? current.prescription_snapshot
+    : null;
 
-  async function refresh() {
-    const currentRow = await loadCurrentProgram();
-    const plannedRow = await loadPlannedProgram();
+  async function refresh(ownerUserId = owner) {
+    const [currentRow, plannedRow] = await Promise.all([loadCurrentProgram(), loadPlannedProgram()]);
     setCurrent(currentRow);
     setPlanned(plannedRow);
-    const rows = await listWorkoutHistory(owner);
+    const rows = await listWorkoutHistory(ownerUserId);
     setHistory(rows);
     if (!sourceId && rows.length) setSourceId(rows[0].sessionId);
+    if (ownerUserId) {
+      try {
+        setSafetyBlocks(await loadActiveCanonicalSafetyBlocks(ownerUserId));
+        setSafetyVerified(true);
+      } catch {
+        setSafetyBlocks([]);
+        setSafetyVerified(false);
+      }
+    }
     setStatus('');
   }
 
@@ -52,20 +72,23 @@ export default function ProgramChangePage() {
       if (navigator.onLine) {
         try { await reconcileAuthenticatedServerHistory(); } catch {}
       }
-      await refresh();
+      await refresh(userId);
     }).catch(e => setStatus(String(e)));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (!source || !current?.prescription_snapshot) {
+    if (!source || !current?.prescription_snapshot || !isWorkoutPrescription(current.prescription_snapshot)) {
       setAssessment(null);
       setDraft(null);
       return;
     }
-    const nextAssessment = assessTrainingProgression(source);
+    const sessionAssessment = assessTrainingProgression(source);
+    const nextAssessment = safetyVerified
+      ? applyPersistentSafetyBlocks(sessionAssessment, safetyBlocks)
+      : blockProgressionWhenSafetyUnavailable(sessionAssessment);
     setAssessment(nextAssessment);
     setDraft(buildProgramChangeDraft(current.prescription_snapshot, nextAssessment));
-  }, [source, current]);
+  }, [source, current, safetyBlocks, safetyVerified]);
 
   async function bootstrap() {
     setBusy(true);
@@ -76,8 +99,8 @@ export default function ProgramChangePage() {
         p_prescription_snapshot: SYNTHETIC_M1_WORKOUT,
       });
       if (error) throw error;
-      setStatus('Dogfood current program initialized. Existing Health workflow remains authoritative.');
-      await refresh();
+      setStatus('Dogfood current program initialized. This bootstrap path does not perform canonical cutover.');
+      await refresh(owner);
     } catch (e) {
       setStatus(e instanceof Error ? e.message : String(e));
     } finally { setBusy(false); }
@@ -103,7 +126,7 @@ export default function ProgramChangePage() {
       });
       if (error) throw error;
       setStatus('PLANNED program version created. Current program has not changed.');
-      await refresh();
+      await refresh(owner);
     } catch (e) {
       setStatus(e instanceof Error ? e.message : String(e));
     } finally { setBusy(false); }
@@ -117,7 +140,7 @@ export default function ProgramChangePage() {
       const { error } = await supabase.rpc('activate_program_version', { p_proposal_id: planned.id });
       if (error) throw error;
       setStatus('Program change explicitly approved and activated. Previous CURRENT version is SUPERSEDED.');
-      await refresh();
+      await refresh(owner);
     } catch (e) {
       setStatus(e instanceof Error ? e.message : String(e));
     } finally { setBusy(false); }
@@ -147,7 +170,26 @@ export default function ProgramChangePage() {
       <h2>CURRENT</h2>
       <div>Version {current.version}</div>
       <div className="muted">ID: {current.id}</div>
-      <div>{current.prescription_snapshot?.name ?? 'Prescription unavailable'}</div>
+      <div>{current.prescription_snapshot && isWorkoutPrescription(current.prescription_snapshot)
+        ? current.prescription_snapshot.name
+        : canonicalRotation
+          ? `${canonicalRotation.sourceProgramId} · ${canonicalRotation.workouts.length}-day canonical rotation`
+          : 'Prescription unavailable'}</div>
+    </div>}
+
+    {canonicalRotation && <div className="card">
+      <h2>Canonical rotation progression boundary</h2>
+      <p className="muted">Single-workout dogfood proposals cannot replace the canonical A/B/C rotation. Session recommendations remain evidence only until a rotation-aware proposal is explicitly reviewed and accepted.</p>
+    </div>}
+
+    {current && !safetyVerified && <div className="card">
+      <h2>BLOCKED — safety context unavailable</h2>
+      <p className="muted">Program progression remains blocked until the persistent Health safety state can be verified.</p>
+    </div>}
+
+    {current && safetyBlocks.length > 0 && <div className="card">
+      <h2>ACTIVE BLOCK — bench progression</h2>
+      <p className="muted">The recurrent symptom context at the documented problem load is active. No diagnosis is inferred, and no bench increase can be proposed or activated.</p>
     </div>}
 
     {planned && <div className="card">
@@ -157,7 +199,7 @@ export default function ProgramChangePage() {
       <button className="primary" disabled={busy} onClick={activate}>Approve & activate version {planned.version}</button>
     </div>}
 
-    {current && history.length > 0 && !planned && <>
+    {current && !canonicalRotation && history.length > 0 && !planned && <>
       <div className="card">
         <label>Source completed exposure
           <select value={sourceId} onChange={e => setSourceId(e.target.value)}>
@@ -183,7 +225,7 @@ export default function ProgramChangePage() {
       </div>}
     </>}
 
-    {current && history.length === 0 && <div className="card">No completed workout history available for a program-change assessment.</div>}
+    {current && !canonicalRotation && history.length === 0 && <div className="card">No completed workout history available for a program-change assessment.</div>}
     {!owner && <p className="muted">Program version lifecycle is account-scoped and unavailable to signed-out guests.</p>}
   </main>;
 }

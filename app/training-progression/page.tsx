@@ -8,6 +8,11 @@ import { listWorkoutHistory, type OfflineWorkoutSession } from '@/src/offline/wo
 import { reconcileAuthenticatedServerHistory } from '@/src/sync/reconcile-history';
 import { assessTrainingProgression, type TrainingProgressionAssessment } from '@/src/domain/training-progression';
 import { EXERCISE_REFERENCE } from '@/src/domain/reference';
+import {
+  applyPersistentSafetyBlocks,
+  blockProgressionWhenSafetyUnavailable,
+  loadActiveCanonicalSafetyBlocks,
+} from '@/src/program/canonical-safety';
 
 function exerciseName(exerciseId: string) {
   return EXERCISE_REFERENCE.find(e => e.id === exerciseId)?.name ?? exerciseId;
@@ -31,7 +36,20 @@ export default function TrainingProgressionPage() {
     const history = await listWorkoutHistory(owner);
     const latest = history[0] ?? null;
     setSession(latest);
-    setAssessment(latest ? assessTrainingProgression(latest) : null);
+    if (latest) {
+      let nextAssessment = assessTrainingProgression(latest);
+      if (owner) {
+        try {
+          const blocks = await loadActiveCanonicalSafetyBlocks(owner);
+          nextAssessment = applyPersistentSafetyBlocks(nextAssessment, blocks);
+        } catch {
+          nextAssessment = blockProgressionWhenSafetyUnavailable(nextAssessment);
+        }
+      }
+      setAssessment(nextAssessment);
+    } else {
+      setAssessment(null);
+    }
     setStatus(latest ? '' : owner
       ? 'No completed sessions are available for this signed-in account.'
       : 'No completed guest sessions are available on this device.');

@@ -5,6 +5,9 @@ import Link from 'next/link';
 import { getSupabaseBrowserClient } from '@/src/backend/supabase-browser';
 import { getLocalOwnerUserId } from '@/src/backend/local-owner';
 import { listWorkoutHistory } from '@/src/offline/workout-store';
+import { withTimeout } from '@/src/backend/async-timeout';
+import { loadB13Readiness } from '@/src/program/b13-readiness';
+import { ACCOUNT_EXPORT_TABLES, ACCOUNT_EXPORT_VERSION } from '@/src/export/account-export';
 
 interface GateCheck {
   id: string;
@@ -23,12 +26,6 @@ interface ExportEvidenceRow {
     confirmedAt?: string;
   };
 }
-
-const TABLES = [
-  'program_version', 'workout_session', 'workout_set_log',
-  'symptom_observation', 'technique_observation', 'recommendation_snapshot',
-  'body_measurement', 'nutrition_meal', 'food_menu_evidence',
-] as const;
 
 const EXPORT_EVIDENCE_TYPE = 'ACCOUNT_EXPORT_V1';
 
@@ -68,12 +65,14 @@ export default function CutoverReadinessPage() {
         { data: plannedRows, error: plannedError },
         { data: evidence, error: exportEvidenceError },
         localHistory,
-      ] = await Promise.all([
+        b13Readiness,
+      ] = await withTimeout(Promise.all([
         supabase.from('program_version').select('id,version,status').eq('status','CURRENT'),
         supabase.from('program_version').select('id,version,status').eq('status','PLANNED'),
         supabase.from('cutover_evidence').select('status,observed_at,metadata').eq('evidence_type', EXPORT_EVIDENCE_TYPE).maybeSingle(),
         listWorkoutHistory(ownerUserId),
-      ]);
+        loadB13Readiness(),
+      ]), 10_000, 'Cutover readiness checks');
       if (currentError) throw currentError;
       if (plannedError) throw plannedError;
       if (exportEvidenceError) throw exportEvidenceError;
@@ -94,6 +93,10 @@ export default function CutoverReadinessPage() {
       const exportPassed = typedEvidence?.status === 'PASS' && typedEvidence?.metadata?.phase === 'CONFIRMED_SAVED';
       const exportPrepared = typedEvidence?.status === 'PENDING' && typedEvidence?.metadata?.phase === 'PREPARED';
       const exportObservedAt = typedEvidence?.observed_at ? new Date(typedEvidence.observed_at).toLocaleString() : null;
+      const canonicalComplete = b13Readiness.technicalStatus === 'CUTOVER_EXECUTED'
+        && b13Readiness.canonicalCutoverPerformed;
+      const canonicalTechnicallyValid = canonicalComplete
+        || b13Readiness.technicalStatus === 'CUTOVER_READY_AWAITING_APPROVAL';
 
       setChecks([
         { id:'auth', label:'Authenticated account', status:'PASS', detail:'Account-scoped evaluation is active.' },
@@ -110,7 +113,24 @@ export default function CutoverReadinessPage() {
               ? 'Export was prepared and download was initiated. Confirm the file is saved on this device.'
               : 'Generate and retain an account export before cutover.'
         },
-        { id:'canonical', label:'Health canonical reconciliation', status:'PENDING', detail:'Existing Health workflow / Master Record remains authoritative until explicit reconciliation and cutover approval.' },
+        {
+          id:'canonical-technical',
+          label:'Health canonical reconciliation',
+          status: canonicalTechnicallyValid ? 'PASS' : 'BLOCKED',
+          detail: canonicalComplete
+            ? 'Canonical program, retained history, safety, body, nutrition semantics and provenance are verified after cutover.'
+            : canonicalTechnicallyValid
+              ? 'Candidate, historical evidence, safety, body, nutrition semantics and provenance are technically verified.'
+            : `Technical reconciliation status: ${b13Readiness.technicalStatus}.`,
+        },
+        {
+          id:'canonical-approval',
+          label:'Explicit canonical cutover approval',
+          status: canonicalComplete ? 'PASS' : 'PENDING',
+          detail: canonicalComplete
+            ? `Approved and performed${b13Readiness.cutoverPerformedAt ? ` at ${new Date(b13Readiness.cutoverPerformedAt).toLocaleString()}` : ''}. Superabang is authoritative.`
+            : 'Not granted. Health Master Record remains authoritative and the verified candidate remains non-active.',
+        },
       ]);
     } catch (error) {
       setMessage(describeError(error));
@@ -122,10 +142,11 @@ export default function CutoverReadinessPage() {
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const summary = useMemo(() => {
+    if (loading) return 'CHECKING';
     const blocked = checks.filter(c => c.status === 'BLOCKED').length;
     const pending = checks.filter(c => c.status === 'PENDING').length;
-    return blocked ? 'NOT READY' : pending ? 'PENDING GATES' : 'READY FOR CUTOVER REVIEW';
-  }, [checks]);
+    return blocked ? 'NOT READY' : pending ? 'PENDING GATES' : 'CUTOVER COMPLETE';
+  }, [checks, loading]);
 
   async function exportAccountData() {
     setMessage('Building account-scoped JSON export…');
@@ -136,12 +157,12 @@ export default function CutoverReadinessPage() {
       const supabase = getSupabaseBrowserClient();
       const exportedAt = new Date().toISOString();
       const payload: Record<string, unknown> = {
-        exportVersion: 'superabang-account-export-0.1.0',
+        exportVersion: ACCOUNT_EXPORT_VERSION,
         exportedAt,
-        canonicalStatus: 'DOGFOOD_NOT_CANONICAL',
+        canonicalStatus: 'SUPERABANG_CANONICAL',
       };
 
-      for (const table of TABLES) {
+      for (const table of ACCOUNT_EXPORT_TABLES) {
         const { data, error } = await supabase.from(table).select('*');
         if (error) throw new Error(`${table}: ${error.message}`);
         payload[table] = data ?? [];
@@ -151,8 +172,8 @@ export default function CutoverReadinessPage() {
       const blob = new Blob([JSON.stringify(payload, null, 2)], { type:'application/json' });
 
       const { error: prepareError } = await supabase.rpc('prepare_cutover_export_evidence', {
-        p_export_version: 'superabang-account-export-0.1.0',
-        p_canonical_status: 'DOGFOOD_NOT_CANONICAL',
+        p_export_version: ACCOUNT_EXPORT_VERSION,
+        p_canonical_status: 'SUPERABANG_CANONICAL',
         p_observed_at: exportedAt,
       });
       if (prepareError) throw prepareError;
@@ -196,8 +217,8 @@ export default function CutoverReadinessPage() {
 
   return <main>
     <h1>Cutover readiness</h1>
-    <p className="muted">B12 hardening gate. This page does not perform canonical cutover.</p>
-    <div className="card"><h2>{summary}</h2><p className="muted">Any BLOCKED or PENDING item prevents canonical Health cutover.</p></div>
+    <p className="muted">B12 hardening plus B13 canonical state and retained-evidence verification. This page is read-only for program authority.</p>
+    <div className="card"><h2>{summary}</h2><p className="muted">Any BLOCKED or PENDING item indicates a reconciliation or operational follow-up.</p></div>
     {checks.map(check => <div className="card" key={check.id}><h2>{check.status} — {check.label}</h2><p className="muted">{check.detail}</p></div>)}
     <div className="row">
       <button className="primary" onClick={exportAccountData} disabled={loading}>Generate account export</button>
